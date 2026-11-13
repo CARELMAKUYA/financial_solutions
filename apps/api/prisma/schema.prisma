@@ -1,0 +1,600 @@
+// Tee Que Financial Solutions: loan management with manual repayment recording.
+// Money is stored as integer cents. Business dates are `date` columns (SAST calendar days).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------- Users & security
+
+enum Role {
+  OWNER // Everything, including staff accounts and settings
+  ADMIN // Day-to-day administration
+}
+
+model User {
+  id                      String    @id @default(uuid()) @db.Uuid
+  name                    String
+  email                   String    @unique
+  passwordHash            String
+  role                    Role      @default(ADMIN)
+  /// May reverse or correct payments and post loan adjustments. Owners always can.
+  canAuthoriseCorrections Boolean   @default(false)
+  /// Receives reminder emails (when email is enabled in settings).
+  receiveEmails           Boolean   @default(true)
+  active                  Boolean   @default(true)
+  lastLoginAt             DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  sessions Session[]
+  auditLog AuditLog[]
+
+  @@map("admin_users")
+}
+
+model Session {
+  id        String   @id @default(uuid()) @db.Uuid
+  tokenHash String   @unique
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String?  @db.Uuid
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  entity    String
+  entityId  String?
+  details   Json?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+/// Sequential, human-readable reference numbers (client numbers, loan references, receipts).
+model Counter {
+  name  String @id
+  value Int    @default(0)
+
+  @@map("counters")
+}
+
+model Settings {
+  id                       Int      @id @default(1)
+  companyName              String   @default("Tee Que Financial Solutions")
+  tagline                  String   @default("Your Trusted Financial Partner")
+  ncrRegistrationNumber    String   @default("")
+  address                  String   @default("")
+  phone                    String   @default("")
+  email                    String   @default("")
+  bankDetails              String   @default("")
+  /// Payment crediting order. Default is NCA s126(3): interest, then fees and charges, then principal.
+  allocationOrder          String[] @default(["INTEREST", "FEES", "PRINCIPAL"])
+  /// Cap unpaid interest and fees charged while in arrears at the unpaid principal (NCA s103(5)).
+  inDuplum                 Boolean  @default(true)
+  /// Payments by these methods start as "awaiting verification" and don't affect balances until verified.
+  verifyMethods            PaymentMethod[] @default([])
+  // Default loan terms (editable per loan)
+  defaultAnnualRateBps     Int      @default(6000)
+  defaultServiceFeeCents   Int      @default(6900)
+  defaultInitiationFeeCents Int     @default(0)
+  /// Full calendar months of bank statements a client must supply before an application is approved or a loan issued (0 = not required).
+  requiredStatementMonths  Int      @default(3)
+  // Reminders
+  reminderDaysBefore       Int      @default(3)
+  remindDueSoon            Boolean  @default(true)
+  remindDueToday           Boolean  @default(true)
+  remindDayAfter           Boolean  @default(true)
+  /// Repeat an unpaid-instalment reminder every N days after the day-after reminder (0 = don't repeat).
+  overdueRepeatDays        Int      @default(7)
+  dailySummary             Boolean  @default(true)
+  weeklySummary            Boolean  @default(true)
+  /// SAST hour (0-23) the reminders and summaries go out.
+  reminderHour             Int      @default(7)
+  emailEnabled             Boolean  @default(false)
+  updatedAt                DateTime @updatedAt
+
+  @@map("settings")
+}
+
+// ---------------------------------------------------------------- Clients & loans
+
+enum ClientStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+model Client {
+  id                 String       @id @default(uuid()) @db.Uuid
+  clientNumber       String       @unique
+  firstName          String
+  lastName           String
+  idNumber           String       @unique
+  phone              String
+  altPhone           String?
+  email              String?
+  address            String?
+  employer           String?
+  employerPhone      String?
+  monthlyIncomeCents Int?
+  /// Day of month the client is paid (1-31). Used to suggest due dates.
+  payday             Int?
+  bankName           String?
+  bankAccountNumber  String?
+  notes              String?
+  status             ClientStatus @default(ACTIVE)
+  createdById        String       @db.Uuid
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  applications LoanApplication[]
+  loans        Loan[]
+  documents    LoanDocument[]
+
+  @@index([lastName, firstName])
+  @@map("clients")
+}
+
+enum ProductType {
+  SHORT_TERM // Short-term financial assistance
+  SALARY_ADVANCE
+  EMERGENCY_CASH
+}
+
+enum Frequency {
+  MONTHLY
+  FORTNIGHTLY
+  WEEKLY
+}
+
+enum ApplicationStatus {
+  PENDING
+  APPROVED
+  DECLINED
+  WITHDRAWN
+  ISSUED
+}
+
+model LoanApplication {
+  id                    String            @id @default(uuid()) @db.Uuid
+  applicationNumber     String            @unique
+  clientId              String            @db.Uuid
+  client                Client            @relation(fields: [clientId], references: [id])
+  product               ProductType       @default(SHORT_TERM)
+  requestedAmountCents  Int
+  requestedInstalments  Int
+  frequency             Frequency         @default(MONTHLY)
+  purpose               String?
+  monthlyIncomeCents    Int?
+  monthlyExpensesCents  Int?
+  status                ApplicationStatus @default(PENDING)
+  decisionNotes         String?
+  decidedById           String?           @db.Uuid
+  decidedAt             DateTime?
+  createdById           String            @db.Uuid
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  loan Loan?
+
+  @@index([status])
+  @@map("loan_applications")
+}
+
+enum LoanStatus {
+  ACTIVE
+  SETTLED // Fully Paid
+  CANCELLED // Issued in error, before any payment
+  WRITTEN_OFF
+}
+
+model Loan {
+  id                    String           @id @default(uuid()) @db.Uuid
+  reference             String           @unique
+  clientId              String           @db.Uuid
+  client                Client           @relation(fields: [clientId], references: [id])
+  applicationId         String?          @unique @db.Uuid
+  application           LoanApplication? @relation(fields: [applicationId], references: [id])
+  product               ProductType      @default(SHORT_TERM)
+  status                LoanStatus       @default(ACTIVE)
+  frequency             Frequency
+  /// Cash paid out to the client.
+  loanAmountCents       Int
+  /// Initiation fee, added to the principal debt at disbursement.
+  initiationFeeCents    Int
+  /// Opening principal debt = loan amount + initiation fee.
+  principalDebtCents    Int
+  annualRateBps         Int
+  /// Service fee charged on each due date.
+  serviceFeeCents       Int
+  numberOfInstalments   Int
+  disbursedOn           DateTime         @db.Date
+  firstDueDate          DateTime         @db.Date
+  /// Regular instalment of the current schedule.
+  instalmentCents       Int
+  scheduleVersion       Int              @default(1)
+  notes                 String?
+  createdById           String           @db.Uuid
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+
+  // ---- Snapshot derived from the ledger engine. Recomputed in the same database transaction
+  // as every payment/adjustment, and daily for date-driven fields. Never edited directly.
+  principalOutstandingCents Int       @default(0)
+  interestOutstandingCents  Int       @default(0)
+  feesOutstandingCents      Int       @default(0)
+  totalOutstandingCents     Int       @default(0)
+  arrearsCents              Int       @default(0)
+  oldestArrearsDate         DateTime? @db.Date
+  overpaymentCents          Int       @default(0)
+  totalPaidCents            Int       @default(0)
+  lastPaymentDate           DateTime? @db.Date
+  nextDueDate               DateTime? @db.Date
+  nextDueCents              Int       @default(0)
+  pendingVerificationCents  Int       @default(0)
+  inDuplumCapped            Boolean   @default(false)
+  settledOn                 DateTime? @db.Date
+  recomputedAt              DateTime?
+
+  instalments   Instalment[]
+  payments      Payment[]
+  allocations   PaymentAllocation[]
+  adjustments   LoanAdjustment[]
+  arrangements  RepaymentArrangement[]
+  followUps     FollowUpNote[]
+  documents     LoanDocument[]
+  notifications Notification[]
+
+  @@index([clientId])
+  @@index([status])
+  @@map("loans")
+}
+
+enum InstalmentStatus {
+  UPCOMING
+  DUE_TODAY
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  RESCHEDULED
+}
+
+enum CollectionStatus {
+  NONE // Overdue but no payment recorded yet: may still be received/captured
+  PROMISE_TO_PAY
+  CONFIRMED_MISSED // Administrator confirmed no payment was received
+}
+
+/// Repayment schedule. Rows are never deleted; a repayment arrangement supersedes unpaid rows and adds a new version.
+model Instalment {
+  id                 String           @id @default(uuid()) @db.Uuid
+  loanId             String           @db.Uuid
+  loan               Loan             @relation(fields: [loanId], references: [id])
+  version            Int
+  seq                Int
+  dueDate            DateTime         @db.Date
+  amountCents        Int
+  principalCents     Int
+  interestCents      Int
+  feeCents           Int
+  arrangementId      String?          @db.Uuid
+  /// Set when a repayment arrangement replaced this instalment.
+  supersededOn       DateTime?        @db.Date
+  /// Amount that had been paid towards it when superseded (kept as part of history).
+  supersededPaidCents Int?
+
+  // ---- Derived (see Loan)
+  paidCents          Int              @default(0)
+  remainingCents     Int              @default(0)
+  amountDueCents     Int              @default(0)
+  status             InstalmentStatus @default(UPCOMING)
+  fullyPaidOn        DateTime?        @db.Date
+  lastPaymentDate    DateTime?        @db.Date
+
+  collectionStatus   CollectionStatus @default(NONE)
+  promiseDate        DateTime?        @db.Date
+
+  followUps     FollowUpNote[]
+  notifications Notification[]
+
+  @@unique([loanId, version, seq])
+  @@index([dueDate])
+  @@index([status])
+  @@map("repayment_schedules")
+}
+
+model RepaymentArrangement {
+  id                  String    @id @default(uuid()) @db.Uuid
+  loanId              String    @db.Uuid
+  loan                Loan      @relation(fields: [loanId], references: [id])
+  effectiveDate       DateTime  @db.Date
+  previousVersion     Int
+  newVersion          Int
+  frequency           Frequency
+  numberOfInstalments Int
+  firstDueDate        DateTime  @db.Date
+  instalmentCents     Int
+  balanceAtArrangementCents Int
+  reason              String
+  authorisedById      String    @db.Uuid
+  createdAt           DateTime  @default(now())
+
+  @@map("repayment_arrangements")
+}
+
+// ---------------------------------------------------------------- Payments
+
+enum PaymentMethod {
+  CASH
+  EFT
+  BANK_DEPOSIT
+}
+
+enum PaymentStatus {
+  PENDING_VERIFICATION // Recorded, but doesn't affect balances until verified
+  CONFIRMED
+  REJECTED // Verification failed: money was never received
+  REVERSED // Reversed by an authorised administrator (see payment_adjustments)
+}
+
+/// Manual payment transactions. Append-only: amounts and dates can't be changed (enforced by a database trigger).
+model Payment {
+  id                    String        @id @default(uuid()) @db.Uuid
+  transactionNumber     String        @unique
+  loanId                String        @db.Uuid
+  loan                  Loan          @relation(fields: [loanId], references: [id])
+  clientId              String        @db.Uuid
+  amountCents           Int
+  paymentDate           DateTime      @db.Date
+  recordedAt            DateTime      @default(now())
+  recordedById          String        @db.Uuid
+  method                PaymentMethod
+  reference             String?
+  notes                 String?
+  status                PaymentStatus
+  /// One per form submission, so a double-click or retry can't record the payment twice.
+  idempotencyKey        String        @unique
+  /// Snapshot shown on the receipt.
+  scheduledInstalmentCents Int
+  balanceBeforeCents    Int
+  /// The payment this one replaces (a correction).
+  replacesPaymentId     String?       @unique @db.Uuid
+  /// Overpayment awaiting review.
+  overpaymentFlag       Boolean       @default(false)
+  overpaymentResolvedAt DateTime?
+  overpaymentResolution String?
+
+  allocations   PaymentAllocation[]
+  adjustments   PaymentAdjustment[]
+  verifications PaymentVerification[]
+  documents     LoanDocument[]
+
+  @@index([loanId, paymentDate])
+  @@index([paymentDate])
+  @@index([status])
+  @@map("payment_transactions")
+}
+
+enum AllocationComponent {
+  INTEREST
+  FEES
+  PRINCIPAL
+  OVERPAYMENT
+}
+
+/// How each confirmed payment was credited. Recalculated when an earlier-dated transaction changes the
+/// picture; old rows are kept with `supersededAt` set, never deleted.
+model PaymentAllocation {
+  id           String              @id @default(uuid()) @db.Uuid
+  paymentId    String              @db.Uuid
+  payment      Payment             @relation(fields: [paymentId], references: [id])
+  loanId       String              @db.Uuid
+  loan         Loan                @relation(fields: [loanId], references: [id])
+  component    AllocationComponent
+  amountCents  Int
+  balanceAfterCents Int
+  createdAt    DateTime            @default(now())
+  supersededAt DateTime?
+
+  @@index([paymentId])
+  @@index([loanId])
+  @@map("payment_allocations")
+}
+
+enum PaymentAdjustmentKind {
+  REVERSAL
+  CORRECTION // Reversal of the original plus a linked replacement payment
+}
+
+model PaymentAdjustment {
+  id                   String                @id @default(uuid()) @db.Uuid
+  paymentId            String                @db.Uuid
+  payment              Payment               @relation(fields: [paymentId], references: [id])
+  kind                 PaymentAdjustmentKind
+  reason               String
+  replacementPaymentId String?               @unique @db.Uuid
+  authorisedById       String                @db.Uuid
+  createdAt            DateTime              @default(now())
+
+  @@map("payment_adjustments")
+}
+
+enum LoanAdjustmentKind {
+  FEE_CHARGE
+  INTEREST_WAIVER
+  FEE_WAIVER
+  PRINCIPAL_WRITE_OFF
+  OVERPAYMENT_REFUND
+}
+
+/// Authorised loan-level adjustments. Never deleted; a mistaken one is reversed (reversedAt) with a reason.
+model LoanAdjustment {
+  id             String             @id @default(uuid()) @db.Uuid
+  loanId         String             @db.Uuid
+  loan           Loan               @relation(fields: [loanId], references: [id])
+  kind           LoanAdjustmentKind
+  amountCents    Int
+  effectiveDate  DateTime           @db.Date
+  reason         String
+  authorisedById String             @db.Uuid
+  createdAt      DateTime           @default(now())
+  reversedAt     DateTime?
+  reversedById   String?            @db.Uuid
+  reversalReason String?
+
+  @@index([loanId])
+  @@map("loan_adjustments")
+}
+
+enum VerificationAction {
+  FLAGGED
+  VERIFIED
+  REJECTED
+}
+
+model PaymentVerification {
+  id        String             @id @default(uuid()) @db.Uuid
+  paymentId String             @db.Uuid
+  payment   Payment            @relation(fields: [paymentId], references: [id])
+  action    VerificationAction
+  notes     String?
+  userId    String             @db.Uuid
+  createdAt DateTime           @default(now())
+
+  @@index([paymentId])
+  @@map("payment_verifications")
+}
+
+/// Daily reconciliation of recorded payments against cash counted / bank statements.
+model Reconciliation {
+  id              String        @id @default(uuid()) @db.Uuid
+  date            DateTime      @db.Date
+  method          PaymentMethod
+  recordedCents   Int
+  actualCents     Int
+  varianceCents   Int
+  notes           String?
+  reconciledById  String        @db.Uuid
+  createdAt       DateTime      @default(now())
+
+  @@index([date])
+  @@map("reconciliations")
+}
+
+// ---------------------------------------------------------------- Collections & reminders
+
+enum FollowUpOutcome {
+  NOTE
+  NO_ANSWER
+  SPOKE_TO_CLIENT
+  PROMISE_TO_PAY
+  PAYMENT_CLAIMED // Client says they paid: check the bank before recording
+  CONFIRMED_MISSED
+}
+
+model FollowUpNote {
+  id           String          @id @default(uuid()) @db.Uuid
+  loanId       String          @db.Uuid
+  loan         Loan            @relation(fields: [loanId], references: [id])
+  instalmentId String?         @db.Uuid
+  instalment   Instalment?     @relation(fields: [instalmentId], references: [id])
+  outcome      FollowUpOutcome
+  note         String
+  promiseDate  DateTime?       @db.Date
+  createdById  String          @db.Uuid
+  createdAt    DateTime        @default(now())
+
+  @@index([loanId])
+  @@map("follow_up_notes")
+}
+
+enum NotificationType {
+  DUE_SOON
+  DUE_TODAY
+  OVERDUE
+  DAILY_OVERDUE_SUMMARY
+  WEEKLY_COLLECTION_SUMMARY
+  OVERPAYMENT
+  VERIFICATION_NEEDED
+  LOAN_SETTLED
+}
+
+enum EmailStatus {
+  NOT_SENT
+  PENDING
+  SENT
+  FAILED
+}
+
+model Notification {
+  id           String           @id @default(uuid()) @db.Uuid
+  type         NotificationType
+  title        String
+  body         String
+  loanId       String?          @db.Uuid
+  loan         Loan?            @relation(fields: [loanId], references: [id])
+  instalmentId String?          @db.Uuid
+  instalment   Instalment?      @relation(fields: [instalmentId], references: [id])
+  /// Unique per reminder occurrence, so a reminder is never created twice.
+  dedupeKey    String           @unique
+  createdAt    DateTime         @default(now())
+  readAt       DateTime?
+  readById     String?          @db.Uuid
+  emailStatus  EmailStatus      @default(NOT_SENT)
+  emailError   String?
+
+  @@index([createdAt])
+  @@index([readAt])
+  @@map("notifications")
+}
+
+// ---------------------------------------------------------------- Documents
+
+enum DocumentKind {
+  CONTRACT
+  ID_DOCUMENT
+  PAYSLIP
+  BANK_STATEMENT
+  PROOF_OF_PAYMENT
+  OTHER
+}
+
+model LoanDocument {
+  id           String       @id @default(uuid()) @db.Uuid
+  clientId     String       @db.Uuid
+  client       Client       @relation(fields: [clientId], references: [id])
+  loanId       String?      @db.Uuid
+  loan         Loan?        @relation(fields: [loanId], references: [id])
+  paymentId    String?      @db.Uuid
+  payment      Payment?     @relation(fields: [paymentId], references: [id])
+  kind         DocumentKind
+  /// Bank statements: first and last calendar month covered (YYYY-MM).
+  periodFrom   String?
+  periodTo     String?
+  fileName     String
+  mimeType     String
+  sizeBytes    Int
+  storageKey   String       @unique
+  uploadedById String       @db.Uuid
+  createdAt    DateTime     @default(now())
+
+  @@index([clientId])
+  @@index([loanId])
+  @@map("loan_documents")
+}
