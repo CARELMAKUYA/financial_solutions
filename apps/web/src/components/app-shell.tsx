@@ -22,13 +22,12 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Brand } from "@/components/brand";
-import { Spinner } from "@/components/shared";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { useMe } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
@@ -75,13 +74,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     },
   });
 
-  if (me.isPending || me.isError) {
-    return (
-      <div className="flex min-h-screen items-center justify-center text-muted-foreground">
-        <Spinner className="size-6" />
-      </div>
-    );
-  }
+  // An expired or revoked session: back to the login page. (The proxy only sees that a cookie exists.)
+  const router = useRouter();
+  const signedOut = me.error instanceof ApiError && me.error.status === 401;
+  useEffect(() => {
+    if (signedOut) router.replace(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+  }, [signedOut, router]);
+
+  // The shell and the page render straight away (pages load their own data in parallel);
+  // only the signed-in user's name waits for the session check.
   const user = me.data;
   const unreadCount = unread.data?.unread ?? 0;
 
@@ -120,11 +121,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {nav}
       <div className="mt-auto grid gap-2 border-t border-sidebar-border pt-3">
         <div className="px-2">
-          <p className="truncate text-sm font-medium text-sidebar-foreground">{user.name}</p>
-          <p className="text-xs text-sidebar-foreground/60">
-            {user.role === "OWNER" ? "Owner" : "Administrator"}
-            {user.role !== "OWNER" && user.canAuthoriseCorrections ? " · corrections" : ""}
-          </p>
+          {user ? (
+            <>
+              <p className="truncate text-sm font-medium text-sidebar-foreground">{user.name}</p>
+              <p className="text-xs text-sidebar-foreground/60">
+                {user.role === "OWNER" ? "Owner" : "Administrator"}
+                {user.role !== "OWNER" && user.canAuthoriseCorrections ? " · corrections" : ""}
+              </p>
+            </>
+          ) : (
+            <div className="grid gap-1.5 py-0.5" aria-hidden>
+              <div className="h-3.5 w-24 animate-pulse rounded bg-sidebar-foreground/15" />
+              <div className="h-3 w-16 animate-pulse rounded bg-sidebar-foreground/10" />
+            </div>
+          )}
         </div>
         <div className="flex gap-1">
           <Button
@@ -133,7 +143,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             className="flex-1 justify-start text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground"
             onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
           >
-            {resolvedTheme === "dark" ? <Sun /> : <Moon />} Theme
+            {/* Both icons, switched by the `dark` class: the server can't know the theme, so the markup must not depend on it. */}
+            <Sun className="hidden dark:block" />
+            <Moon className="dark:hidden" /> Theme
           </Button>
           <Button
             variant="ghost"
