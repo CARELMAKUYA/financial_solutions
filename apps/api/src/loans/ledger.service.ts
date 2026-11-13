@@ -29,7 +29,6 @@ export class LedgerService {
       loan,
       input: {
         principalDebtCents: loan.principalDebtCents,
-        annualRateBps: loan.annualRateBps,
         disbursedOn: fromDbDate(loan.disbursedOn),
         instalments: instalments.map((i) => ({
           id: i.id,
@@ -40,6 +39,7 @@ export class LedgerService {
           // The service fee is charged on each due date. (An arrangement's instalment `feeCents` also
           // carries a share of charges that were already owed, which must not be charged again.)
           feeCents: loan.serviceFeeCents,
+          interestCents: i.interestCents,
           superseded: Boolean(i.supersededOn),
           supersededFrom: i.supersededOn ? fromDbDate(i.supersededOn) : undefined,
         })),
@@ -58,6 +58,7 @@ export class LedgerService {
         })),
         allocationOrder: settings.allocationOrder as Component[],
         inDuplum: settings.inDuplum,
+        fullTermInterest: settings.chargeFullTermInterest,
         asOf,
       },
     };

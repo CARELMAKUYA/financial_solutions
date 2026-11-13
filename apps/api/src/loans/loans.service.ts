@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { AuditService } from '../common/audit.service';
-import { fromDbDate, todaySast, toDbDate } from '../common/dates';
+import { AuditService, Tx } from '../common/audit.service';
+import { DateOnly, fromDbDate, todaySast, toDbDate } from '../common/dates';
 import { AuthUser } from '../common/decorators';
 import { lockLoan, nextNumber } from '../common/util';
 import { requiredStatementCount, requireStatements } from '../common/statements';
@@ -25,7 +25,7 @@ export class LoansService {
     const principalDebtCents = dto.loanAmountCents + dto.initiationFeeCents;
     const schedule = buildSchedule({
       principalCents: principalDebtCents,
-      annualRateBps: dto.annualRateBps,
+      monthlyRateBps: dto.monthlyRateBps,
       startDate: dto.disbursedOn,
       firstDueDate: dto.firstDueDate,
       instalments: dto.numberOfInstalments,
@@ -70,7 +70,7 @@ export class LoansService {
           loanAmountCents: dto.loanAmountCents,
           initiationFeeCents: dto.initiationFeeCents,
           principalDebtCents: q.principalDebtCents,
-          annualRateBps: dto.annualRateBps,
+          monthlyRateBps: dto.monthlyRateBps,
           serviceFeeCents: dto.serviceFeeCents,
           numberOfInstalments: dto.numberOfInstalments,
           disbursedOn: toDbDate(dto.disbursedOn),
@@ -105,7 +105,7 @@ export class LoansService {
           client: client.clientNumber,
           loanAmountCents: dto.loanAmountCents,
           initiationFeeCents: dto.initiationFeeCents,
-          annualRateBps: dto.annualRateBps,
+          monthlyRateBps: dto.monthlyRateBps,
           serviceFeeCents: dto.serviceFeeCents,
           instalments: dto.numberOfInstalments,
           frequency: dto.frequency,
@@ -200,6 +200,7 @@ export class LoansService {
         asOf: todaySast(),
         principalCents: state.principalCents,
         interestCents: state.interestCents,
+        futureInterestCents: state.futureInterestCents,
         feesCents: state.feesCents,
         totalCents: state.totalCents,
       },
@@ -208,20 +209,31 @@ export class LoansService {
     };
   }
 
+  /**
+   * Interest on the current schedule's instalments that aren't due yet. An arrangement moves it to the
+   * new due dates rather than charging the monthly rate again, so rescheduling never adds interest.
+   */
+  private async interestNotYetDue(db: Tx, loanId: string, today: DateOnly) {
+    const r = await db.instalment.aggregate({ where: { loanId, supersededOn: null, dueDate: { gt: toDbDate(today) } }, _sum: { interestCents: true } });
+    return r._sum.interestCents ?? 0;
+  }
+
   async previewArrangement(id: string, dto: ArrangementDto) {
     const today = todaySast();
     if (dto.firstDueDate <= today) throw new BadRequestException('The first new due date must be after today');
     const { loan, state } = await this.ledger.state(this.prisma as never, id);
     if (loan.status !== 'ACTIVE') throw new BadRequestException('Only active loans can be rescheduled');
+    const fixedInterestCents = await this.interestNotYetDue(this.prisma as never, id, today);
     const schedule = buildSchedule({
       principalCents: state.principalCents,
-      annualRateBps: loan.annualRateBps,
+      monthlyRateBps: loan.monthlyRateBps,
       startDate: today,
       firstDueDate: dto.firstDueDate,
       instalments: dto.numberOfInstalments,
       frequency: dto.frequency,
       serviceFeeCents: loan.serviceFeeCents,
-      carriedChargesCents: state.interestCents + state.feesCents,
+      carriedChargesCents: state.interestCents - state.futureInterestCents + state.feesCents,
+      fixedInterestCents,
     });
     return { balanceCents: state.totalCents, arrearsCents: state.arrearsCents, ...schedule };
   }
@@ -235,15 +247,17 @@ export class LoansService {
       const loan = await tx.loan.findUniqueOrThrow({ where: { id } });
       if (loan.status !== 'ACTIVE') throw new BadRequestException('Only active loans can be rescheduled');
       if (dto.firstDueDate <= today) throw new BadRequestException('The first new due date must be after today');
+      const fixedInterestCents = await this.interestNotYetDue(tx, id, today);
       const schedule = buildSchedule({
         principalCents: state.principalCents,
-        annualRateBps: loan.annualRateBps,
+        monthlyRateBps: loan.monthlyRateBps,
         startDate: today,
         firstDueDate: dto.firstDueDate,
         instalments: dto.numberOfInstalments,
         frequency: dto.frequency,
         serviceFeeCents: loan.serviceFeeCents,
-        carriedChargesCents: state.interestCents + state.feesCents,
+        carriedChargesCents: state.interestCents - state.futureInterestCents + state.feesCents,
+      fixedInterestCents,
       });
       const newVersion = loan.scheduleVersion + 1;
       const arrangement = await tx.repaymentArrangement.create({

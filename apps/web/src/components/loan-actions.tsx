@@ -311,7 +311,7 @@ export function ArrangementDialog({ loan, ...p }: DialogProps & { loan: LoanDeta
         <DialogHeader>
           <DialogTitle>New repayment arrangement</DialogTitle>
           <DialogDescription>
-            Replaces every unpaid instalment with a new schedule for the full balance owed today, including arrears. Paid instalments and payment history are kept. Interest continues at {(loan.annualRateBps / 100).toFixed(2)}% a year.
+            Replaces every unpaid instalment with a new schedule for the full balance owed today, including arrears. Paid instalments and payment history are kept. Interest not yet due moves to the new dates; no extra interest is added.
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-3 sm:grid-cols-3">

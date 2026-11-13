@@ -6,9 +6,11 @@
  * reversals and corrections therefore always produce the same result as if they had been
  * recorded on time, and history is never overwritten.
  *
- * Money is integer cents throughout. Interest is simple daily interest on the outstanding
- * principal debt: principal × annual rate × days / 365, rounded to the cent (half up) each
- * time it is brought to account (at every due date, payment and adjustment).
+ * Money is integer cents throughout. Interest is charged monthly and flat: the monthly rate on
+ * the original principal debt for every month of the term, whatever has been repaid. It is
+ * worked out once when the schedule is built and charged with each instalment on its due date.
+ * With `fullTermInterest` (the default) the interest for the whole term is payable even when the
+ * loan is settled early, so the settlement amount includes interest not yet due.
  *
  * Payments are credited on their actual payment date in the configured order. The default is
  * the National Credit Act s126(3) order: due or unpaid interest, then fees and charges, then
@@ -26,13 +28,19 @@ export type AdjustmentKind = 'FEE_CHARGE' | 'INTEREST_WAIVER' | 'FEE_WAIVER' | '
 
 export type InstalmentStatus = 'UPCOMING' | 'DUE_TODAY' | 'PARTIALLY_PAID' | 'PAID' | 'OVERDUE' | 'RESCHEDULED';
 
-const DAY_BASIS = 365;
+/** How many months one instalment period counts as for interest: a month, or 12/26 or 12/52 of one. */
+export function periodMonths(frequency: Frequency): number {
+  return frequency === 'MONTHLY' ? 1 : frequency === 'FORTNIGHTLY' ? 12 / 26 : 12 / 52;
+}
 
-/** Interest in cents on `principal` for `days` days at `annualRateBps` (basis points, 2750 = 27.5% p.a.). */
-export function interestFor(principalCents: number, annualRateBps: number, days: number): number {
-  if (principalCents <= 0 || days <= 0 || annualRateBps <= 0) return 0;
-  // principal (≤ 1e9) × bps (≤ 1e5) × days (≤ 1e4) stays well inside Number's exact-integer range.
-  return roundHalfUp((principalCents * annualRateBps * days) / (10_000 * DAY_BASIS));
+/**
+ * Flat interest in cents on `principalCents` at `monthlyRateBps` (basis points, 500 = 5% per month)
+ * for `months` months, rounded half up.
+ */
+export function flatInterest(principalCents: number, monthlyRateBps: number, months: number): number {
+  if (principalCents <= 0 || months <= 0 || monthlyRateBps <= 0) return 0;
+  // principal (≤ 1e9) × bps (≤ 1e4) × months (≤ 120) stays well inside Number's exact-integer range.
+  return roundHalfUp((principalCents * monthlyRateBps * months) / 10_000);
 }
 
 export function roundHalfUp(x: number): number {
@@ -53,8 +61,9 @@ export function dueDates(firstDueDate: DateOnly, count: number, frequency: Frequ
 export interface ScheduleInput {
   /** Opening principal debt (cash advanced + any capitalised initiation fee). */
   principalCents: number;
-  annualRateBps: number;
-  /** Interest accrues from this date (disbursement, or the arrangement's effective date). */
+  /** Flat monthly interest rate in basis points (500 = 5% per month). */
+  monthlyRateBps: number;
+  /** Disbursement, or the arrangement's effective date. */
   startDate: DateOnly;
   firstDueDate: DateOnly;
   instalments: number;
@@ -63,6 +72,11 @@ export interface ScheduleInput {
   serviceFeeCents: number;
   /** Interest/fees already due at `startDate` (rescheduling only); spread evenly over the new instalments. */
   carriedChargesCents?: number;
+  /**
+   * Rescheduling only: the interest to spread over the new instalments instead of charging the monthly
+   * rate again, so an arrangement moves what was already agreed to new dates without adding interest.
+   */
+  fixedInterestCents?: number;
 }
 
 export interface ScheduledInstalment {
@@ -86,44 +100,24 @@ export interface Schedule {
 }
 
 /**
- * Level-instalment schedule on actual day counts. Finds the smallest whole-cent principal+interest
- * payment that clears the debt when every instalment is paid on its due date, then trims the last
- * instalment so the projected balance lands exactly on zero.
+ * Flat-interest schedule: total interest = principal × monthly rate × months in the term, and
+ * principal and interest are each split evenly over the instalments. The last instalment takes the
+ * rounding cents, so every instalment is the same except possibly the last (by a few cents).
  */
 export function buildSchedule(input: ScheduleInput): Schedule {
-  const { principalCents, annualRateBps, startDate, frequency, serviceFeeCents } = input;
+  const { principalCents, monthlyRateBps, startDate, frequency, serviceFeeCents } = input;
   if (!Number.isInteger(principalCents) || principalCents <= 0) throw new Error('Principal must be a positive amount in cents');
   if (!Number.isInteger(input.instalments) || input.instalments < 1 || input.instalments > 120) throw new Error('Number of instalments must be between 1 and 120');
   if (input.firstDueDate <= startDate) throw new Error('The first due date must be after the start date');
 
-  const dates = dueDates(input.firstDueDate, input.instalments, frequency);
-  const days = dates.map((d, i) => diffDays(i === 0 ? startDate : dates[i - 1], d));
+  const n = input.instalments;
+  const dates = dueDates(input.firstDueDate, n, frequency);
+  const totalInterest = input.fixedInterestCents ?? flatInterest(principalCents, monthlyRateBps, n * periodMonths(frequency));
+  // Even split; the last instalment absorbs the remainder.
+  const share = (total: number, i: number) => (i < n - 1 ? Math.floor(total / n) : total - Math.floor(total / n) * (n - 1));
   const carried = input.carriedChargesCents ?? 0;
-  const carriedShare = (i: number) => Math.floor(carried / dates.length) + (i < carried % dates.length ? 1 : 0);
-
-  const simulate = (payment: number) => {
-    let bal = principalCents;
-    const rows: { interest: number; principal: number }[] = [];
-    for (const d of days) {
-      const interest = interestFor(bal, annualRateBps, d);
-      const principal = payment - interest;
-      bal -= principal;
-      rows.push({ interest, principal });
-    }
-    return { bal, rows };
-  };
-
-  let lo = 0;
-  let hi = principalCents * 3 + 1;
-  while (lo < hi) {
-    const mid = Math.floor((lo + hi) / 2);
-    if (simulate(mid).bal <= 0) hi = mid;
-    else lo = mid + 1;
-  }
-  const pi = lo;
-  const { bal, rows } = simulate(pi);
-  // bal ≤ 0: the last payment is too large by -bal.
-  rows[rows.length - 1].principal += bal;
+  const carriedShare = (i: number) => Math.floor(carried / n) + (i < carried % n ? 1 : 0);
+  const rows = dates.map((_, i) => ({ interest: share(totalInterest, i), principal: share(principalCents, i) }));
 
   let closing = principalCents;
   const instalments = rows.map((r, i) => {
@@ -162,6 +156,8 @@ export interface EngineInstalment {
   amountCents: number;
   /** Service fee charged when this instalment falls due. */
   feeCents: number;
+  /** Interest charged when this instalment falls due (from the schedule). */
+  interestCents: number;
   /** Superseded by a repayment arrangement: still listed for history but no longer collectable. */
   superseded: boolean;
   /** For superseded instalments: the arrangement's effective date. Fees are charged only for due dates before it. */
@@ -186,7 +182,6 @@ export interface EngineAdjustment {
 
 export interface EngineInput {
   principalDebtCents: number;
-  annualRateBps: number;
   disbursedOn: DateOnly;
   instalments: EngineInstalment[];
   payments: EnginePayment[];
@@ -194,7 +189,12 @@ export interface EngineInput {
   allocationOrder?: Component[];
   /** Cap unpaid interest+fees charged while in arrears at the unpaid principal (NCA s103(5) "in duplum"). */
   inDuplum?: boolean;
-  /** Today. Interest is accrued up to here for the settlement figure. */
+  /**
+   * The whole term's interest is payable, even on early settlement (default true). When false,
+   * settling early pays only the interest of instalments already due.
+   */
+  fullTermInterest?: boolean;
+  /** Today. */
   asOf: DateOnly;
 }
 
@@ -206,7 +206,7 @@ export interface PaymentAllocation {
   feesCents: number;
   principalCents: number;
   overpaymentCents: number;
-  /** Total legally payable immediately after this payment (interest accrued to the payment date). */
+  /** Settlement amount immediately after this payment. */
   balanceAfterCents: number;
   /** Instalments this payment went towards, by seq. */
   instalments: { seq: number; amountCents: number }[];
@@ -235,8 +235,10 @@ export interface InstalmentState {
 
 export interface LedgerState {
   principalCents: number;
-  /** Interest brought to account and unpaid, plus interest accrued from then to `asOf`. */
+  /** Unpaid interest in the settlement amount: interest already due, plus `futureInterestCents`. */
   interestCents: number;
+  /** Interest for instalments not yet due that is payable on settlement (0 unless `fullTermInterest`). */
+  futureInterestCents: number;
   feesCents: number;
   /** Settlement amount today. Never negative. */
   totalCents: number;
@@ -257,20 +259,28 @@ export interface LedgerState {
 }
 
 type Event =
-  | { type: 'DUE'; date: DateOnly; rank: 0; order: string; feeCents: number }
+  | { type: 'DUE'; date: DateOnly; rank: 0; order: string; feeCents: number; interestCents: number }
   | { type: 'ADJ'; date: DateOnly; rank: 1 | 3; order: string; adj: EngineAdjustment }
   | { type: 'PAY'; date: DateOnly; rank: 2; order: string; pay: EnginePayment };
 
 export function computeLedger(input: EngineInput): LedgerState {
   const order = input.allocationOrder ?? DEFAULT_ALLOCATION_ORDER;
-  const { annualRateBps, asOf } = input;
+  const { asOf } = input;
+  const fullTerm = input.fullTermInterest ?? true;
 
   const active = input.instalments.filter((i) => !i.superseded).sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.seq - b.seq);
-  // Due dates that charge a service fee: every active instalment, plus superseded ones that fell due before the arrangement.
-  const feeDates = input.instalments.filter((i) => !i.superseded || (i.supersededFrom && i.dueDate < i.supersededFrom));
+  // Due dates that charge interest and the service fee: every active instalment, plus superseded ones that fell due before the arrangement.
+  const chargeable = input.instalments.filter((i) => !i.superseded || (i.supersededFrom && i.dueDate < i.supersededFrom));
 
   const events: Event[] = [
-    ...feeDates.map((i) => ({ type: 'DUE' as const, date: i.dueDate, rank: 0 as const, order: String(i.seq).padStart(4, '0'), feeCents: i.feeCents })),
+    ...chargeable.map((i) => ({
+      type: 'DUE' as const,
+      date: i.dueDate,
+      rank: 0 as const,
+      order: String(i.seq).padStart(4, '0'),
+      feeCents: i.feeCents,
+      interestCents: i.interestCents,
+    })),
     ...input.adjustments.map((a) => ({
       type: 'ADJ' as const,
       date: a.date,
@@ -291,7 +301,10 @@ export function computeLedger(input: EngineInput): LedgerState {
   let interest = 0;
   let fees = 0;
   let credit = 0;
-  let lastAccrual = input.disbursedOn;
+  // Scheduled interest not yet due and not yet paid or waived in advance.
+  let futureInterest = chargeable.reduce((s, i) => s + i.interestCents, 0);
+  // Interest paid or waived before its due date; used up as those instalments fall due.
+  let interestInAdvance = 0;
   let settledOn: DateOnly | null = null;
   let paidTowardsDebt = 0;
   let totalPaid = 0;
@@ -306,7 +319,8 @@ export function computeLedger(input: EngineInput): LedgerState {
   // Manual fee charges raise the next instalment's amount.
   const extraCharges: { date: DateOnly; amountCents: number }[] = [];
 
-  const owed = () => principal + interest + fees;
+  /** Settlement amount: principal, interest and fees due, plus the rest of the term's interest when that's payable. */
+  const owed = () => principal + interest + fees + (fullTerm ? futureInterest : 0);
 
   const inArrears = (date: DateOnly) => {
     const dueBefore = schedule.filter((s) => s.dueDate < date).reduce((s, x) => s + x.amountCents, 0);
@@ -334,13 +348,6 @@ export function computeLedger(input: EngineInput): LedgerState {
     return add;
   };
 
-  const accrueTo = (date: DateOnly) => {
-    if (date > lastAccrual) {
-      charge('INTEREST', interestFor(principal, annualRateBps, diffDays(lastAccrual, date)), date);
-      lastAccrual = date;
-    }
-  };
-
   /** A new charge after the loan was settled: use any credit first, then the loan is open again. */
   const reopenIfCharged = (date: DateOnly) => {
     if (owed() > 0 && credit > 0) {
@@ -365,6 +372,14 @@ export function computeLedger(input: EngineInput): LedgerState {
       split[c] += take;
       left -= take;
     }
+    // Paying beyond what's due: the rest of the term's interest, paid in advance.
+    if (fullTerm && left > 0 && futureInterest > 0) {
+      const take = Math.min(left, futureInterest);
+      futureInterest -= take;
+      interestInAdvance += take;
+      totalInterestCharged += take;
+      split.INTEREST += take;
+    }
     return split;
   };
 
@@ -375,15 +390,18 @@ export function computeLedger(input: EngineInput): LedgerState {
 
     if (ev.type === 'DUE') {
       if (settledBefore) continue; // Loan settled: no further interest or fees.
-      accrueTo(ev.date);
+      // This instalment's interest falls due, less anything already paid or waived in advance.
+      const advance = Math.min(interestInAdvance, ev.interestCents);
+      interestInAdvance -= advance;
+      const due = ev.interestCents - advance;
+      futureInterest -= due;
+      charge('INTEREST', due, ev.date);
       charge('FEES', ev.feeCents, ev.date);
       continue;
     }
 
     if (ev.type === 'ADJ') {
       const a = ev.adj;
-      if (!settledBefore) accrueTo(ev.date);
-      else lastAccrual = ev.date > lastAccrual ? ev.date : lastAccrual;
       let applied = 0;
       switch (a.kind) {
         case 'FEE_CHARGE':
@@ -391,10 +409,16 @@ export function computeLedger(input: EngineInput): LedgerState {
           if (applied > 0) extraCharges.push({ date: ev.date, amountCents: applied });
           reopenIfCharged(ev.date);
           break;
-        case 'INTEREST_WAIVER':
-          applied = Math.min(a.amountCents, interest);
-          interest -= applied;
+        case 'INTEREST_WAIVER': {
+          // Interest already due first, then (when it's payable) interest not yet due.
+          const fromDue = Math.min(a.amountCents, interest);
+          interest -= fromDue;
+          const fromFuture = fullTerm ? Math.min(a.amountCents - fromDue, futureInterest) : 0;
+          futureInterest -= fromFuture;
+          interestInAdvance += fromFuture;
+          applied = fromDue + fromFuture;
           break;
+        }
         case 'FEE_WAIVER':
           applied = Math.min(a.amountCents, fees);
           fees -= applied;
@@ -419,7 +443,6 @@ export function computeLedger(input: EngineInput): LedgerState {
 
     // Payment
     const p = ev.pay;
-    if (!settledBefore) accrueTo(ev.date);
     totalPaid += p.amountCents;
     if (lastPaymentDate === null || ev.date > (lastPaymentDate as DateOnly)) lastPaymentDate = ev.date;
     const toDebt = Math.min(p.amountCents, owed());
@@ -442,19 +465,8 @@ export function computeLedger(input: EngineInput): LedgerState {
     if (settledOn === null && owed() === 0) settledOn = ev.date;
   }
 
-  // Interest accrued since the last event, up to today, is part of the settlement amount.
-  let accrued = 0;
-  if (settledOn === null && asOf > lastAccrual) {
-    accrued = interestFor(principal, annualRateBps, diffDays(lastAccrual, asOf));
-    if (input.inDuplum && inArrears(asOf)) {
-      const room = Math.max(0, principal - interest - fees);
-      if (accrued > room) {
-        accrued = room;
-        inDuplumCapped = true;
-      }
-    }
-  }
-  const interestNow = interest + accrued;
+  const futureNow = fullTerm && settledOn === null ? futureInterest : 0;
+  const interestNow = interest + futureNow;
   const total = principal + interestNow + fees;
 
   // ---- Instalment statuses (first-in, first-out against the active schedule) ----
@@ -561,12 +573,13 @@ export function computeLedger(input: EngineInput): LedgerState {
   return {
     principalCents: principal,
     interestCents: interestNow,
+    futureInterestCents: futureNow,
     feesCents: fees,
     totalCents: total,
     overpaymentCents: credit,
     settledOn,
     totalPaidCents: totalPaid,
-    totalInterestChargedCents: totalInterestCharged + accrued,
+    totalInterestChargedCents: totalInterestCharged,
     totalFeesChargedCents: totalFeesCharged,
     inDuplumCapped,
     arrearsCents: arrears,

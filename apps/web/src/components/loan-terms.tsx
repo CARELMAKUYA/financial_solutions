@@ -11,7 +11,7 @@ import type { Frequency, Quote, Settings } from "@/lib/types";
 export interface LoanTerms {
   loanAmountCents: number | null;
   initiationFeeCents: number | null;
-  /** Percent per year as typed, e.g. "60" or "27.5". */
+  /** Percent per month as typed, e.g. "5" or "3.5". */
   ratePercent: string;
   serviceFeeCents: number | null;
   numberOfInstalments: string;
@@ -42,7 +42,7 @@ export function useSettingsDefaults(setTerms: (fn: (t: LoanTerms) => LoanTerms) 
     if (!s) return;
     setTerms((t) => ({
       ...t,
-      ratePercent: t.ratePercent || String(s.defaultAnnualRateBps / 100),
+      ratePercent: t.ratePercent || String(s.defaultMonthlyRateBps / 100),
       serviceFeeCents: t.serviceFeeCents ?? s.defaultServiceFeeCents,
       initiationFeeCents: t.initiationFeeCents ?? s.defaultInitiationFeeCents,
     }));
@@ -56,7 +56,7 @@ export function toQuoteDto(t: LoanTerms): { dto: Record<string, unknown> | null;
   const n = Number(t.numberOfInstalments);
   if (!t.loanAmountCents || t.loanAmountCents < 10_000) return { dto: null, error: "Enter a loan amount of at least R 100" };
   if (t.initiationFeeCents === null) return { dto: null, error: "Enter the initiation fee (0 if none)" };
-  if (t.ratePercent.trim() === "" || !Number.isFinite(rate) || rate < 0 || rate > 1000) return { dto: null, error: "Enter the interest rate as a percentage per year" };
+  if (t.ratePercent.trim() === "" || !Number.isFinite(rate) || rate < 0 || rate > 100) return { dto: null, error: "Enter the interest rate as a percentage per month" };
   if (t.serviceFeeCents === null) return { dto: null, error: "Enter the service fee per instalment (0 if none)" };
   if (!Number.isInteger(n) || n < 1 || n > 120) return { dto: null, error: "Number of instalments must be between 1 and 120" };
   if (!t.disbursedOn) return { dto: null, error: "Enter the disbursement date" };
@@ -67,7 +67,7 @@ export function toQuoteDto(t: LoanTerms): { dto: Record<string, unknown> | null;
     dto: {
       loanAmountCents: t.loanAmountCents,
       initiationFeeCents: t.initiationFeeCents,
-      annualRateBps: Math.round(rate * 100),
+      monthlyRateBps: Math.round(rate * 100),
       serviceFeeCents: t.serviceFeeCents,
       numberOfInstalments: n,
       frequency: t.frequency,
@@ -120,7 +120,7 @@ export function LoanTermsFields({
       <Field label="Initiation fee" htmlFor="t-init" required hint="Added to the principal debt">
         <MoneyInput id="t-init" value={terms.initiationFeeCents} onChange={set("initiationFeeCents")} />
       </Field>
-      <Field label="Interest rate (% per year)" htmlFor="t-rate" required>
+      <Field label="Interest rate (% per month)" htmlFor="t-rate" required hint="Flat: charged every month on the full loan amount">
         <div className="relative">
           <Input id="t-rate" inputMode="decimal" className="pr-8 tabular-nums" value={terms.ratePercent} onChange={(e) => set("ratePercent")(e.target.value.replace(",", "."))} />
           <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-sm text-muted-foreground">%</span>
