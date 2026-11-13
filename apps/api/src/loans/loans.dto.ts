@@ -5,7 +5,7 @@ import { IsDateOnly } from '../common/util';
 export class QuoteDto {
   @IsInt() @Min(10_000, { message: 'The loan amount must be at least R 100' }) @Max(100_000_000) loanAmountCents: number;
   @IsInt() @Min(0) @Max(10_000_000) initiationFeeCents: number;
-  @IsInt() @Min(0) @Max(100_000, { message: 'Interest rate looks too high' }) annualRateBps: number;
+  @IsInt() @Min(0) @Max(10_000, { message: 'Interest rate looks too high' }) monthlyRateBps: number;
   @IsInt() @Min(0) @Max(1_000_000) serviceFeeCents: number;
   @IsInt() @Min(1) @Max(120) numberOfInstalments: number;
   @IsEnum(Frequency) frequency: Frequency;

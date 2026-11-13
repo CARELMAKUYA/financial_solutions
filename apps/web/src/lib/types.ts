@@ -126,7 +126,8 @@ export interface Loan {
   loanAmountCents: number;
   initiationFeeCents: number;
   principalDebtCents: number;
-  annualRateBps: number;
+  /** Flat monthly interest rate in basis points (500 = 5% per month). */
+  monthlyRateBps: number;
   serviceFeeCents: number;
   numberOfInstalments: number;
   disbursedOn: string;
@@ -288,7 +289,7 @@ export interface LoanDetail extends Loan {
   userNames: Record<string, string>;
   /** Instalments each confirmed payment went towards, keyed by payment id. */
   coverage: Record<string, { seq: number; amountCents: number }[]>;
-  settlementQuote: { asOf: string; principalCents: number; interestCents: number; feesCents: number; totalCents: number };
+  settlementQuote: { asOf: string; principalCents: number; interestCents: number; /** Part of `interestCents` for instalments not yet due. */ futureInterestCents: number; feesCents: number; totalCents: number };
   daysInArrears: number;
   audit: AuditEntry[];
 }
@@ -501,7 +502,8 @@ export interface Settings {
   allocationOrder: ("INTEREST" | "FEES" | "PRINCIPAL")[];
   inDuplum: boolean;
   verifyMethods: PaymentMethod[];
-  defaultAnnualRateBps: number;
+  defaultMonthlyRateBps: number;
+  chargeFullTermInterest: boolean;
   defaultServiceFeeCents: number;
   defaultInitiationFeeCents: number;
   requiredStatementMonths: number;

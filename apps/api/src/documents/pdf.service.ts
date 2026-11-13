@@ -197,7 +197,7 @@ export class PdfService {
         ['Product', PRODUCT_LABEL[loan.product]],
         ['Loan amount', formatRand(loan.loanAmountCents)],
         ['Initiation fee', formatRand(loan.initiationFeeCents)],
-        ['Interest rate', `${(loan.annualRateBps / 100).toFixed(2)}% per year`],
+        ['Interest rate', `${(loan.monthlyRateBps / 100).toFixed(2)}% per month (flat, on ${formatRand(loan.principalDebtCents)})`],
         ['Service fee', `${formatRand(loan.serviceFeeCents)} per instalment`],
         ['Repayments', `${FREQUENCY_LABEL[loan.frequency]}, ${formatRand(loan.instalmentCents)}`],
         ['Disbursed', formatDate(fromDbDate(loan.disbursedOn))],
@@ -207,7 +207,8 @@ export class PdfService {
       this.kv(doc, [
         ['Total paid', formatRand(state.totalPaidCents)],
         ['Principal outstanding', formatRand(state.principalCents)],
-        ['Interest outstanding (to date)', formatRand(state.interestCents)],
+        ['Interest outstanding', formatRand(state.interestCents)],
+        ...(state.futureInterestCents ? ([['  of which not yet due', formatRand(state.futureInterestCents)]] as [string, string][]) : []),
         ['Fees outstanding', formatRand(state.feesCents)],
         ['Total outstanding (settlement amount today)', formatRand(state.totalCents)],
         ['Amount in arrears', formatRand(state.arrearsCents)],

@@ -85,7 +85,7 @@ async function main() {
   const terms = (amount: number, n: number, disbursedOn: string, firstDue: string) => ({
     loanAmountCents: amount,
     initiationFeeCents: Math.min(Math.round(16_500 + amount * 0.1), 105_000),
-    annualRateBps: 6000,
+    monthlyRateBps: 500,
     serviceFeeCents: 6900,
     numberOfInstalments: n,
     frequency: 'MONTHLY' as const,

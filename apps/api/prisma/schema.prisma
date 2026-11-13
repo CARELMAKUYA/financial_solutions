@@ -91,7 +91,10 @@ model Settings {
   /// Payments by these methods start as "awaiting verification" and don't affect balances until verified.
   verifyMethods            PaymentMethod[] @default([])
   // Default loan terms (editable per loan)
-  defaultAnnualRateBps     Int      @default(6000)
+  /// Flat monthly interest rate in basis points (500 = 5% per month), charged on the original principal debt.
+  defaultMonthlyRateBps    Int      @default(500)
+  /// The whole term's interest is payable even when a loan is settled early.
+  chargeFullTermInterest   Boolean  @default(true)
   defaultServiceFeeCents   Int      @default(6900)
   defaultInitiationFeeCents Int     @default(0)
   /// Full calendar months of bank statements a client must supply before an application is approved or a loan issued (0 = not required).
@@ -220,7 +223,8 @@ model Loan {
   initiationFeeCents    Int
   /// Opening principal debt = loan amount + initiation fee.
   principalDebtCents    Int
-  annualRateBps         Int
+  /// Flat monthly interest rate in basis points (500 = 5% per month).
+  monthlyRateBps        Int
   /// Service fee charged on each due date.
   serviceFeeCents       Int
   numberOfInstalments   Int

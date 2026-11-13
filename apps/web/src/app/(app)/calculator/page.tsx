@@ -26,7 +26,7 @@ export default function CalculatorPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">Quote {quote.isFetching && <Spinner />}</CardTitle>
-            <CardDescription>Interest is charged daily on the outstanding principal. Paying early reduces it.</CardDescription>
+            <CardDescription>Interest is flat: the monthly rate on the full loan amount, every month of the term.</CardDescription>
           </CardHeader>
           <CardContent>
             {validationError ? <EmptyState>{validationError}</EmptyState> : quote.data ? <QuoteSummary quote={quote.data} /> : <ErrorState error={quote.error} />}

@@ -35,7 +35,7 @@ function Toggle({ label, hint, checked, onChange, disabled }: { label: string; h
 /** Business details, payment rules and reminders. Owners edit; everyone else sees them read-only. */
 export function SettingsForm({ settings, section, canEdit }: { settings: Settings; section: SettingsSection; canEdit: boolean }) {
   const [s, setS] = useState<Settings>(settings);
-  const [rateText, setRateText] = useState((settings.defaultAnnualRateBps / 100).toString());
+  const [rateText, setRateText] = useState((settings.defaultMonthlyRateBps / 100).toString());
   const set = <K extends keyof Settings>(k: K, v: Settings[K]) => setS((prev) => ({ ...prev, [k]: v }));
   const disabled = !canEdit;
 
@@ -51,7 +51,8 @@ export function SettingsForm({ settings, section, canEdit }: { settings: Setting
                 allocationOrder: s.allocationOrder,
                 inDuplum: s.inDuplum,
                 verifyMethods: s.verifyMethods,
-                defaultAnnualRateBps: rate,
+                defaultMonthlyRateBps: rate,
+                chargeFullTermInterest: s.chargeFullTermInterest,
                 defaultServiceFeeCents: s.defaultServiceFeeCents,
                 defaultInitiationFeeCents: s.defaultInitiationFeeCents,
                 requiredStatementMonths: s.requiredStatementMonths,
@@ -166,6 +167,14 @@ export function SettingsForm({ settings, section, canEdit }: { settings: Setting
                 disabled={disabled}
               />
 
+              <Toggle
+                label="Charge the full term's interest on early settlement"
+                hint="On: a client who settles early still pays interest for every month of the term. Off: they pay only the interest of instalments already due. NCA s125 generally limits early settlement to interest up to the settlement date, so check this with your compliance adviser."
+                checked={s.chargeFullTermInterest}
+                onChange={(v) => set("chargeFullTermInterest", v)}
+                disabled={disabled}
+              />
+
               <div className="grid gap-2">
                 <p className="text-sm font-medium">Require verification for</p>
                 <p className="text-xs text-muted-foreground">Payments by these methods are saved as &quot;awaiting verification&quot; and don&apos;t reduce the balance until someone verifies them.</p>
@@ -186,7 +195,7 @@ export function SettingsForm({ settings, section, canEdit }: { settings: Setting
               </div>
 
               <div className="grid gap-4 sm:grid-cols-3">
-                <Field label="Default interest rate (% per year)" htmlFor="s-rate">
+                <Field label="Default interest rate (% per month)" htmlFor="s-rate">
                   <Input id="s-rate" inputMode="decimal" value={rateText} disabled={disabled} onChange={(e) => setRateText(e.target.value)} />
                 </Field>
                 <Field label="Default service fee (per instalment)" htmlFor="s-fee">

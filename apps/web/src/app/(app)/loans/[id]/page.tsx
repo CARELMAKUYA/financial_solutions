@@ -148,7 +148,7 @@ export default function LoanPage({ params }: { params: Promise<{ id: string }> }
         <StatCard
           label="Outstanding balance"
           value={formatRand(loan.settlementQuote.totalCents)}
-          sub={`Principal ${formatRand(loan.settlementQuote.principalCents)} · interest ${formatRand(loan.settlementQuote.interestCents)} · fees ${formatRand(loan.settlementQuote.feesCents)}`}
+          sub={`Principal ${formatRand(loan.settlementQuote.principalCents)} · interest ${formatRand(loan.settlementQuote.interestCents)}${loan.settlementQuote.futureInterestCents ? ` (${formatRand(loan.settlementQuote.futureInterestCents)} not yet due)` : ""} · fees ${formatRand(loan.settlementQuote.feesCents)}`}
         />
         <StatCard
           label="Arrears"
@@ -448,7 +448,9 @@ export default function LoanPage({ params }: { params: Promise<{ id: string }> }
                 <Detail label="Loan amount (paid out)">{formatRand(loan.loanAmountCents)}</Detail>
                 <Detail label="Initiation fee">{formatRand(loan.initiationFeeCents)}</Detail>
                 <Detail label="Opening principal debt">{formatRand(loan.principalDebtCents)}</Detail>
-                <Detail label="Interest rate">{formatRate(loan.annualRateBps)} per year (simple, daily)</Detail>
+                <Detail label="Interest rate">
+                  {formatRate(loan.monthlyRateBps)} per month (flat, on {formatRand(loan.principalDebtCents)})
+                </Detail>
                 <Detail label="Service fee">{formatRand(loan.serviceFeeCents)} per instalment</Detail>
               </div>
               <div>

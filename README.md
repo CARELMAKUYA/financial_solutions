@@ -35,7 +35,7 @@ Sign in at http://localhost:3000:
 | Owner (authorised for corrections) | `owner@teeque.local` | `Owner@123456` |
 | Administrator | `admin@teeque.local` | `Admin@123456` |
 
-**Before real use:** change both passwords, fill in the business details and NCR registration number (Settings), check the default rate and fees, and remove the demo clients. The simplest way to remove them is to start from an empty database and run the seed once for the owner account only.
+**Before real use:** change both passwords, fill in the business details and NCR registration number (Settings), check the default rate (5% per month) and fees, and remove the demo clients. The simplest way to remove them is to start from an empty database and run the seed once for the owner account only.
 
 Tests:
 
@@ -51,15 +51,15 @@ All amounts are integer cents. All calculations happen on the server, in [`apps/
 **A loan's balance is never edited directly.** It is worked out by replaying the loan terms plus every confirmed payment and authorised adjustment in date order. So a backdated payment, a reversal or a correction always gives exactly the same result as if it had been recorded correctly on the day. After every change the result is saved (balances, instalment statuses, payment allocations) **in the same database transaction** as the payment itself, so a payment can never exist without its balance update.
 
 - **Principal debt** = loan amount + initiation fee (added at disbursement).
-- **Interest** is simple daily interest on the outstanding principal: `principal × annual rate × days ÷ 365`, rounded to the cent when it's brought to account (each due date, payment or adjustment).
+- **Interest** is charged **monthly and flat**: the monthly rate (default 5%) on the original principal debt, for every month of the term, however much has been repaid. A R 2 000 loan over 3 months at 5% costs R 100 interest a month, R 300 in total. Weekly and fortnightly loans charge 12/52 or 12/26 of a month per instalment. The interest is worked out when the loan is issued and charged with each instalment on its due date.
 - **Service fee** is charged on each due date.
-- **Instalments** are level amounts worked out on actual day counts so that paying every instalment on its due date clears the loan exactly. The last one absorbs any rounding.
+- **Instalments** are equal: (principal + total interest) ÷ number of instalments, plus the service fee. The last one absorbs any rounding cents.
 - **Payment allocation** follows the National Credit Act **s126(3)** by default: due or unpaid **interest**, then **fees and charges**, then **principal**. The order is configurable in Settings. Confirm it matches your loan agreements with your compliance adviser.
 - **In duplum** (NCA s103(5)), which is on by default: while a loan is in arrears, unpaid interest and fees stop growing once they equal the unpaid principal.
-- **Early settlement amount** = principal + interest to today + unpaid fees. Future interest and fees are not charged.
+- **Early settlement amount** = principal + **the whole term's interest** + unpaid fees. Service fees for instalments not yet due are not charged. This is the default (Settings → Payments → "Charge the full term's interest on early settlement"). Switched off, settling early pays only the interest of instalments already due. NCA s125 generally limits early settlement to interest up to the settlement date, so **confirm this with your compliance adviser**. Paying more than is due goes to principal first, then to interest not yet due.
 - **Partial payments** are applied to instalments oldest first. An instalment shows **Partially paid** until it's fully covered, and **Overdue** once its due date has passed with money still owing.
 - **Overpayments**: the balance never goes below zero. Anything paid beyond the settlement amount is held as an overpayment, flagged for review, and resolved (for example refunded) by an authorised administrator.
-- **After the final due date**, everything still owed (including late interest) is due and overdue.
+- **After the final due date**, everything still owed is due and overdue. No further interest is added.
 
 ### Recording a payment
 
@@ -79,7 +79,7 @@ Nothing financial is ever deleted or overwritten. The database itself refuses (t
 - **Reverse** a payment: it stays in the history, marked reversed, with the reason.
 - **Correct** a payment: the original is reversed and a linked replacement with the right amount, date or method is recorded in one step.
 - **Loan adjustments**: fee or charge, interest waiver, fee waiver, principal write-off, overpayment refund. Each needs a reason and can itself be reversed.
-- **Repayment arrangement**: replaces every unpaid instalment with a new schedule for the whole balance, including arrears. The old instalments are kept, marked "rescheduled".
+- **Repayment arrangement**: replaces every unpaid instalment with a new schedule for the whole balance, including arrears. Interest not yet due moves to the new dates and no extra interest is added, so the total owed doesn't change. The old instalments are kept, marked "rescheduled".
 
 Every change is in the audit log with who, when and what. The audit log can't be edited or deleted.
 

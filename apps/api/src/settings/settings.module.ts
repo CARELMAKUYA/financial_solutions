@@ -30,7 +30,8 @@ class UpdateSettingsDto {
   @IsOptional() @IsBoolean() inDuplum?: boolean;
   @IsOptional() @IsArray() @IsEnum(PaymentMethod, { each: true }) verifyMethods?: PaymentMethod[];
 
-  @IsOptional() @IsInt() @Min(0) @Max(100_000) defaultAnnualRateBps?: number;
+  @IsOptional() @IsInt() @Min(0) @Max(10_000) defaultMonthlyRateBps?: number;
+  @IsOptional() @IsBoolean() chargeFullTermInterest?: boolean;
   @IsOptional() @IsInt() @Min(0) @Max(1_000_000) defaultServiceFeeCents?: number;
   @IsOptional() @IsInt() @Min(0) @Max(10_000_000) defaultInitiationFeeCents?: number;
 

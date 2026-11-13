@@ -42,7 +42,7 @@ async function newLoan(opts: { months?: number; n?: number; amount?: number; fir
       product: 'SHORT_TERM',
       loanAmountCents: opts.amount ?? 500_000,
       initiationFeeCents: 0,
-      annualRateBps: 6000,
+      monthlyRateBps: 500,
       serviceFeeCents: 6900,
       numberOfInstalments: opts.n ?? 4,
       frequency: 'MONTHLY',
@@ -368,7 +368,7 @@ describe('reminders', () => {
     await newLoan({ months: 1, firstDueOffsetDays: 20 }); // overdue
     const disbursed = addDays(today, -27);
     await svc.loans.create(
-      { clientId, product: 'SHORT_TERM', loanAmountCents: 100_000, initiationFeeCents: 0, annualRateBps: 6000, serviceFeeCents: 0, numberOfInstalments: 2, frequency: 'MONTHLY', disbursedOn: disbursed, firstDueDate: addDays(today, 3) },
+      { clientId, product: 'SHORT_TERM', loanAmountCents: 100_000, initiationFeeCents: 0, monthlyRateBps: 500, serviceFeeCents: 0, numberOfInstalments: 2, frequency: 'MONTHLY', disbursedOn: disbursed, firstDueDate: addDays(today, 3) },
       owner,
     );
     const at = new Date(`${today}T09:00:00+02:00`);
